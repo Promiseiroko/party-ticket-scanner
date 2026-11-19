@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Picnic Ticket Scanner</title>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #f3f4f6;
+  margin: 0;
+  padding: 20px;
+  text-align: center;
+}
+
+.container {
+  background: white;
+  max-width: 450px;
+  margin: 20px auto;
+  padding: 22px;
+  border-radius: 15px;
+  box-shadow: 0 3px 12px rgba(0,0,0,0.1);
+}
+
+h1 { color: #172554; }
+
+input, button {
+  width: 100%;
+  padding: 14px;
+  margin-top: 12px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+input {
+  border: 1px solid #ccc;
+}
+
+button {
+  border: none;
+  background: #172554;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+button:disabled {
+  background: #888;
+}
+
+#reader {
+  margin-top: 20px;
+}
+
+#result {
+  margin-top: 20px;
+  padding: 15px;
+  border-radius: 10px;
+  overflow-wrap: break-word;
+}
+
+.hidden { display: none; }
+
+.success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.info {
+  background: #e0f2fe;
+  color: #075985;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+  <h1>Picnic Ticket Scanner</h1>
+  <p>Organiser Check-in Portal</p>
+
+  <div id="loginBox">
+    <input
+      type="password"
+      id="pin"
+      placeholder="Enter Organiser PIN"
+    >
+
+    <button onclick="login()">LOGIN</button>
+  </div>
+
+  <div id="scannerBox" class="hidden">
+    <p>Login successful. Scan a guest ticket.</p>
+
+    <button onclick="startScanner()">START SCANNER</button>
+    <button onclick="stopScanner()">STOP SCANNER</button>
+
+    <div id="reader"></div>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<script>
+const WORKER_URL = "eyJleHAiOjE3OTUxMzE1NzEwNjF9.jEY0QePYqqv4ksU3tDXGq6BLfpQlnSwEyAs-dAdpU_E";
+
+let session = "";
+let scanner = null;
+let scanning = false;
+let busy = false;
+
+function showResult(message, type) {
+  const box = document.getElementById("result");
+  box.className = type;
+  box.innerHTML = message;
+}
+
+async function login() {
+  const pin = document.getElementById("pin").value;
+
+  if (!pin) {
+    showResult("Please enter your organiser PIN.", "error");
+    return;
+  }
+
+  showResult("Logging in...", "info");
+
+  try {
+    const response = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "login",
+        pin: pin
+      })
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      showResult("Login failed. Check your PIN.", "error");
+      return;
+    }
+
+    session = data.session;
+
+    document.getElementById("loginBox").classList.add("hidden");
+    document.getElementById("scannerBox").classList.remove("hidden");
+
+    showResult("Login successful.", "success");
+
+  } catch (error) {
+    showResult("Connection failed. Check your internet.", "error");
+  }
+}
+
+function extractToken(decodedText) {
+  try {
+    const url = new URL(decodedText);
+    const token = url.searchParams.get("token");
+
+    if (token) return token;
+  } catch (error) {}
+
+  return decodedText.trim();
+}
+
+async function startScanner() {
+  if (scanning) return;
+
+  scanner = new Html5Qrcode("reader");
+
+  try {
+    await scanner.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: 250 },
+      async (decodedText) => {
+        if (busy) return;
+
+        busy = true;
+        const token = extractToken(decodedText);
+
+        showResult("Checking ticket...", "info");
+
+        try {
+          await scanner.stop();
+          scanning = false;
+        } catch (error) {}
+
+        await checkTicket(token);
+      },
+      () => {}
+    );
+
+    scanning = true;
+    showResult("Camera active. Scan a ticket.", "info");
+
+  } catch (error) {
+    showResult(
+      "Camera could not start. Allow camera permission and use HTTPS.",
+      "error"
+    );
+  }
+}
+
+async function checkTicket(token) {
+  try {
+    const response = await fetch(WORKER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "checkin",
+        session: session,
+        token: token
+      })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      showResult(
+        "<h2>ENTRY APPROVED</h2>" +
+        "<p><b>Name:</b> " + data.name + "</p>" +
+        "<p><b>Ticket ID:</b> " + data["ticketID"] + "</p>",
+        "success"
+      );
+    } else {
+      showResult(
+        "<h2>ENTRY REJECTED</h2><p>" +
+        data.message + "</p>",
+        "error"
+      );
+    }
+
+  } catch (error) {
+    showResult("Connection error. Please try again.", "error");
+  }
+
+  busy = false;
+}
+
+async function stopScanner() {
+  if (!scanner || !scanning) return;
+
+  try {
+    await scanner.stop();
+    scanning = false;
+    showResult("Scanner stopped.", "info");
+  } catch (error) {
+    showResult("Could not stop scanner.", "error");
+  }
+}
+</script>
+
+</body>
+</html>
